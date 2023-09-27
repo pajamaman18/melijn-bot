@@ -29,9 +29,11 @@ import com.kotlindiscord.kord.extensions.i18n.TranslationsProvider
 import com.kotlindiscord.kord.extensions.modules.annotations.converters.Converter
 import com.kotlindiscord.kord.extensions.modules.annotations.converters.ConverterType
 import com.kotlindiscord.kord.extensions.parser.StringParser
+import dev.minn.jda.ktx.messages.InlineMessage
 import me.melijn.bot.database.manager.BalanceManager
 import me.melijn.bot.database.manager.PlaylistManager
 import me.melijn.bot.utils.EnumUtil.ucc
+import me.melijn.bot.utils.JDAUtil.createMessage
 import me.melijn.bot.utils.KoinUtil.inject
 import me.melijn.bot.utils.KordExUtils.tr
 import me.melijn.bot.utils.TimeUtil.normalDate
@@ -40,17 +42,31 @@ import me.melijn.gen.PlaylistData
 import me.melijn.gen.Settings
 import me.melijn.kordkommons.utils.SPACE_PATTERN
 import me.melijn.kordkommons.utils.escapeMarkdown
+import net.dv8tion.jda.api.entities.Message
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.interactions.commands.OptionMapping
 import net.dv8tion.jda.api.interactions.commands.OptionType
 import net.dv8tion.jda.api.interactions.commands.build.OptionData
+import net.dv8tion.jda.api.utils.messages.MessageCreateData
 import org.jetbrains.annotations.PropertyKey
 import org.koin.core.component.inject
 import java.text.SimpleDateFormat
 import java.util.*
 
 object KordExUtils {
+
+    suspend fun ChatCommandContext<*>.respond(
+        builder: InlineMessage<MessageCreateData>.() -> Unit,
+    ): Message {
+        return channel.createMessage(builder)
+    }
+
+    suspend fun ChatCommandContext<*>.respond(
+        content: String,
+    ): Message {
+        return channel.createMessage(content)
+    }
 
     suspend fun CheckContext<MessageReceivedEvent>.userIsOwner() {
         val botSettings by inject<Settings>()
@@ -85,34 +101,34 @@ object KordExUtils {
     }
 
     /**
-     * Int value validator, adds failIf clauses to the validationContext
+     * Comparable value validator, adds failIf clauses to the validationContext
      *
      * @param name parameter name to be used in response
-     * @param min minimum value for the int
+     * @param min minimum value
      *  **/
-    fun ValidationContext<Int?>.atLeast(name: String, min: Int) {
+    fun <K> ValidationContext<Comparable<K>?>.atLeast(name: String, min: K) {
         val size = this.value ?: return
         failIf(size < min, "$name must be **>= $min** but was `$size`")
     }
 
     /**
-     * Int value validator, adds failIf clauses to the validationContext
+     * Comparable value validator, adds failIf clauses to the validationContext
      *
      * @param name parameter name to be used in response
-     * @param max maximum value for the int
+     * @param max maximum value
      *  **/
-    fun ValidationContext<Int?>.atMost(name: String, max: Int) {
+    fun <K> ValidationContext<Comparable<K>?>.atMost(name: String, max: K) {
         val size = this.value ?: return
         failIf(size > max, "$name must be **<= $max** but was `$size`")
     }
 
     /**
-     * Inclusive min max int range validator, adds failIf clauses to the validationContext
+     * Inclusive min max range validator, adds failIf clauses to the validationContext
      * @param name parameter name to be used in response
-     * @param min minimal value for the int
-     * @param max maximal value for the int
+     * @param min minimal value
+     * @param max maximal value
      *  **/
-    fun ValidationContext<Int?>.inRange(name: String, min: Int, max: Int) {
+    fun <K> ValidationContext<Comparable<K>?>.inRange(name: String, min: K, max: K) {
         atLeast(name, min)
         atMost(name, max)
     }

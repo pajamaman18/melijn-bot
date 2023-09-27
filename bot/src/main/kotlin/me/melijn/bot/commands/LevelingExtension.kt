@@ -10,17 +10,18 @@ import com.kotlindiscord.kord.extensions.extensions.publicSlashCommand
 import com.kotlindiscord.kord.extensions.types.respond
 import com.sksamuel.scrimage.ImmutableImage
 import me.melijn.apkordex.command.KordExtension
-import me.melijn.bot.database.manager.BalanceManager
-import me.melijn.bot.database.manager.MissingUserManager
-import me.melijn.bot.database.manager.XPManager
+import me.melijn.bot.database.manager.*
 import me.melijn.bot.utils.*
 import me.melijn.bot.utils.JDAUtil.awaitOrNull
 import me.melijn.bot.utils.KordExUtils.atLeast
 import me.melijn.bot.utils.KordExUtils.bail
 import me.melijn.bot.utils.KordExUtils.publicGuildSlashCommand
 import me.melijn.bot.utils.KordExUtils.publicGuildSubCommand
+import me.melijn.bot.utils.KordExUtils.respond
 import me.melijn.bot.utils.KordExUtils.tr
 import me.melijn.bot.utils.KordExUtils.userIsOwner
+import me.melijn.bot.utils.StringsUtil.format
+import me.melijn.bot.utils.TimeUtil.formatElapsedVerbose
 import me.melijn.bot.utils.image.ImageUtil
 import me.melijn.bot.utils.image.ImageUtil.download
 import me.melijn.gen.LevelRolesData
@@ -41,6 +42,7 @@ import java.util.*
 import javax.imageio.ImageIO
 import javax.swing.text.NumberFormatter
 import kotlin.math.*
+import kotlin.time.Duration.Companion.seconds
 
 const val LEVEL_LOG_BASE = 1.2
 val bigNumberFormatter = NumberFormatter(NumberFormat.getInstance(Locale.UK))
@@ -50,6 +52,7 @@ class LevelingExtension : Extension() {
 
     override val name: String = "leveling"
     val xpManager by inject<XPManager>()
+    val voiceManager by inject<VoiceManager>()
     val balanceManager by inject<BalanceManager>()
     val missingUserManager by inject<MissingUserManager>()
 
@@ -88,7 +91,7 @@ class LevelingExtension : Extension() {
             description = "Shows a leaderboard"
 
             action {
-                val pageSize = 10
+                val pageSize = 9
                 val offset = ((arguments.page - 1L) * pageSize)
                 val invokerId = user.idLong
                 val member = member
@@ -103,12 +106,16 @@ class LevelingExtension : Extension() {
                 val userNameFetcher: suspend (LeaderboardData) -> String = { lbData ->
                     getUserNameFor(lbData.userId, lbData.missing)
                 }
+                val memberNameFetcher: suspend (LeaderboardData) -> String = { lbData ->
+                    val guild = guild ?: bail(tr("leaderboard.guildOnly"))
+                    guild.getUserNameFor(lbData.userId, lbData.missing)
+                }
 
-                val addRow: suspend (Long, List<Long>, String) -> Unit = { position, bigNumbers, name ->
+                val addRow: suspend (Long, List<String>, String) -> Unit = { position, bigNumbers, name ->
                     tableBuilder.row {
                         leftCell("${position}.")
-                        for (bigNumber in bigNumbers) {
-                            rightCell(bigNumberFormatter.valueToString(bigNumber))
+                        for (value in bigNumbers) {
+                            rightCell(value)
                         }
                         leftCell(name.replace("_", "+"))
                     }
@@ -124,15 +131,15 @@ class LevelingExtension : Extension() {
 
                 suspend fun PublicSlashCommandContext<LeaderboardArgs>.addRequestedRowsWithSelf(
                     lbDatas: List<LeaderboardData>,
-                    bigNumbersColumnCount: Int,
                     rowCount: Long,
                     invokerEntryFetcher: suspend () -> LeaderboardData?,
-                    nameFetcher: suspend (LeaderboardData) -> String
+                    nameFetcher: suspend (LeaderboardData) -> String,
+                    defaultColumns: List<String> = List(2) { 0L.format(bigNumberFormatter) }
                 ) {
                     if (lbDatas.none { it.userId == invokerId }) {
                         val invokerLbData = invokerEntryFetcher()
-                        val invokerPos = invokerLbData?.position ?: rowCount
-                        val dataList = invokerLbData?.dataList ?: List(bigNumbersColumnCount) { 0L }
+                        val invokerPos = invokerLbData?.position ?: (rowCount + 1)
+                        val dataList = invokerLbData?.dataList ?: defaultColumns
                         if (invokerPos < offset) {
                             addRow(invokerPos, dataList, user.effectiveName)
                             tableBuilder.addSplit()
@@ -162,14 +169,10 @@ class LevelingExtension : Extension() {
                                 val highestMemberLevelDatas = manager.getTop(guildId, pageSize, offset)
                                 val rowCount = manager.rowCount(guildId)
 
-                                val memberNameFetcher: suspend (LeaderboardData) -> String = { lbData ->
-                                    guild.getUserNameFor(lbData.userId, lbData.missing)
-                                }
-
                                 val invokerEntryFetcher: suspend () -> LeaderboardData? =
                                     { manager.getPosition(guildId, invokerId) }
                                 addRequestedRowsWithSelf(
-                                    highestMemberLevelDatas, 2, rowCount, invokerEntryFetcher,
+                                    highestMemberLevelDatas, rowCount, invokerEntryFetcher,
                                     memberNameFetcher
                                 )
 
@@ -184,7 +187,7 @@ class LevelingExtension : Extension() {
                                 val invokerEntryFetcher: suspend () -> LeaderboardData? =
                                     { manager.getPosition(invokerId) }
                                 addRequestedRowsWithSelf(
-                                    highestUserLevelDatas, 2, rowCount, invokerEntryFetcher,
+                                    highestUserLevelDatas, rowCount, invokerEntryFetcher,
                                     userNameFetcher
                                 )
 
@@ -207,8 +210,33 @@ class LevelingExtension : Extension() {
                                     { manager.getPosition(invokerId) }
 
                                 addRequestedRowsWithSelf(
-                                    highestUserLevelDatas, 1, rowCount, invokerEntryFetcher,
+                                    highestUserLevelDatas, rowCount, invokerEntryFetcher,
                                     userNameFetcher
+                                )
+
+                                rowCount
+                            }
+
+                            LeaderboardOpt.Voice -> {
+                                title = "${tr("leaderboard.voice")} $title"
+                                if (member == null) bail(tr("leaderboard.guildOnly"))
+                                tableBuilder = tableBuilder {
+                                    header {
+                                        leftCell("#"); rightCell("Total time"); rightCell("Longest time"); leftCell("User");
+                                    }
+                                    seperator(0, " ")
+                                }
+                                val guild = member.guild
+                                val guildId = guild.idLong
+
+                                val rowCount = voiceManager.rowCount(guildId)
+                                val dateEntries = voiceManager.getGuildStatistics(guildId, pageSize, offset)
+
+                                val invokerEntryFetcher: suspend () -> LeaderboardData? =
+                                    { voiceManager.getPosition(guildId, invokerId) }
+                                addRequestedRowsWithSelf(
+                                    dateEntries, rowCount, invokerEntryFetcher,
+                                    memberNameFetcher, listOf(0, 0).map { it.seconds.formatElapsedVerbose() }
                                 )
 
                                 rowCount
@@ -317,10 +345,8 @@ class LevelingExtension : Extension() {
                     newXP
                 } else xpManager.getGlobalXP(user)
 
-                channel.createMessage {
-                    val stateText = "was changed to".takeIf { newXP != null } ?: "is"
-                    content = "${user.effectiveName} their xp $stateText: `$xp`"
-                }
+                val stateText = "was changed to".takeIf { newXP != null } ?: "is"
+                respond("${user.effectiveName} their xp $stateText: `$xp`")
             }
         }
         publicGuildSlashCommand {
@@ -406,8 +432,7 @@ class LevelingExtension : Extension() {
     }
 
     private suspend fun getUserNameFor(userId: Long, missing: Boolean): String {
-        val entryUser = shardManager.takeUnless { missing }?.retrieveUserById(userId)?.awaitOrNull()
-        if (entryUser == null) missingUserManager.markUserDeleted(userId)
+        val entryUser = shardManager.takeUnless { missing }?.retrieveUserOrMarkDeleted(userId)
         return entryUser?.effectiveName ?: "missing"
     }
 
@@ -503,7 +528,7 @@ class LevelingExtension : Extension() {
     }
 
     enum class LeaderboardOpt : InferredChoiceEnum {
-        GuildXP, GlobalXP, Currency
+        GuildXP, GlobalXP, Currency, Voice
     }
 
     inner class LeaderboardArgs : Arguments() {
@@ -590,9 +615,11 @@ class LevelingExtension : Extension() {
     }
 }
 
+
+
 interface LeaderboardData {
     val userId: Long
     val position: Long
     val missing: Boolean
-    val dataList: List<Long>
+    val dataList: List<String>
 }
