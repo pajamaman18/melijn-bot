@@ -5,6 +5,7 @@ import com.kotlindiscord.kord.extensions.builders.ExtensibleBotBuilder
 import com.kotlindiscord.kord.extensions.koin.KordExContext
 import com.kotlindiscord.kord.extensions.usagelimits.ratelimits.DefaultRateLimiter
 import com.kotlindiscord.kord.extensions.utils.getKoin
+import com.kotlindiscord.kord.extensions.utils.scheduling.TaskConfig
 import com.zaxxer.hikari.pool.HikariPool.PoolInitializationException
 import dev.minn.jda.ktx.jdabuilder.injectKTX
 import dev.schlaubi.lavakord.LavaKord
@@ -28,12 +29,15 @@ import me.melijn.kordkommons.database.DriverManager
 import me.melijn.kordkommons.logger.logger
 import me.melijn.kordkommons.redis.RedisConfig
 import me.melijn.kordkommons.utils.ReflectUtil
+import net.dv8tion.jda.api.OnlineStatus
+import net.dv8tion.jda.api.entities.Activity
 import net.dv8tion.jda.api.requests.GatewayIntent
 import net.dv8tion.jda.api.utils.MemberCachePolicy
 import net.dv8tion.jda.api.utils.cache.CacheFlag
 import org.koin.dsl.bind
 import org.koin.dsl.module
 import java.net.InetAddress
+import java.util.concurrent.Executors
 import javax.imageio.ImageIO
 import kotlin.system.exitProcess
 
@@ -69,11 +73,15 @@ object Melijn {
             kord {
                 setShardsTotal(PodInfo.shardCount)
                 setShards(PodInfo.shardList)
+                setEventPool(Executors.newVirtualThreadPerTaskExecutor())
+                setCallbackPool(Executors.newVirtualThreadPerTaskExecutor())
                 enableCache(CacheFlag.VOICE_STATE, CacheFlag.ACTIVITY, CacheFlag.EMOJI)
-                setMemberCachePolicy(MemberCachePolicy.DEFAULT)
+                setMemberCachePolicy(MemberCachePolicy.lru(1000).unloadUnless(MemberCachePolicy.VOICE))
                 injectKTX()
                 applyLavakord(lShardManager)
             }
+
+            presence({OnlineStatus.ONLINE}, { shardId -> Activity.customStatus("This is shard $shardId")})
 
             hooks {
                 beforeKoinSetup {
